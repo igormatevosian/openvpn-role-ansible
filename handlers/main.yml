@@ -1,0 +1,9 @@
+---
+# handlers/main.yml
+- name: Restart OpenVPN
+  service:
+    name: openvpn@server
+    state: restarted
+
+- name: Reload sysctl
+  command: sysctl -p

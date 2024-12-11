@@ -1,0 +1,133 @@
+---
+- name: Update package cache
+  apt:
+    update_cache: yes
+
+- name: Install OpenVPN and Easy-RSA
+  apt:
+    name:
+      - openvpn
+      - easy-rsa
+    state: present
+
+- name: Check for Easy-RSA folder
+  block:
+    - name: Check if folder exists
+      stat:
+        path: "{{ easy_rsa_path }}"
+      register: easy_rsa_exists
+
+    - name: Create folder if not found
+      command: make-cadir "{{ easy_rsa_path }}"
+      become_user: vagrant
+      when: not easy_rsa_exists.stat.exists
+
+- name: Check for PKI folder
+  block:
+    - name: Check if PKI folder exists
+      stat:
+        path: /home/vagrant/easy-rsa/pki
+      register: pki_exists
+
+    - name: Create folder if it doesn't exist
+      command: ./easyrsa init-pki
+      args:
+        chdir: "{{ easy_rsa_path }}"
+      become_user: vagrant
+      when: not pki_exists.stat.exists
+
+- name: Create CA and server certificates
+  block:
+    - name: Check if CA certificate exists
+      stat:
+        path: "{{ easy_rsa_pki_path }}/ca.crt"
+      register: ca_cert
+
+    - name: Check if server certificate exists
+      stat:
+        path: "{{ easy_rsa_pki_path }}/issued/server.crt"
+      register: server_cert
+
+    - name: Check if private key exists
+      stat:
+        path: "{{ easy_rsa_pki_path }}/private/server.key"
+      register: server_key
+
+    - name: Check if Diffie-Hellman parameters exist
+      stat:
+        path: "{{ easy_rsa_pki_path }}/dh.pem"
+      register: dh_params
+
+    - name: Check if TLS key exists
+      stat:
+        path: "{{ easy_rsa_pki_path }}/ta.key"
+      register: tls_key
+
+    - name: Create CA without password if not found
+      shell: echo "openvpn_ca" | ./easyrsa build-ca nopass
+      args:
+        chdir: "{{ easy_rsa_path }}"
+      become_user: vagrant
+      when: not ca_cert.stat.exists
+
+    - name: Create server request without password if not found
+      shell: echo "openvpn_server" | ./easyrsa gen-req server nopass
+      args:
+        chdir: "{{ easy_rsa_path }}"
+      become_user: vagrant
+      when: not server_cert.stat.exists
+
+    - name: Sign the server request if not found
+      shell: echo "yes" | ./easyrsa sign-req server server
+      args:
+        chdir: "{{ easy_rsa_path }}"
+      become_user: vagrant
+      when: not server_cert.stat.exists
+
+    - name: Generate Diffie-Hellman parameters if not found
+      command: ./easyrsa gen-dh
+      args:
+        chdir: "{{ easy_rsa_path }}"
+      become_user: vagrant
+      when: not dh_params.stat.exists
+
+    - name: Generate TLS key if not found
+      command: openvpn --genkey --secret pki/ta.key
+      args:
+        chdir: "{{ easy_rsa_path }}"
+      become_user: vagrant
+      when: not tls_key.stat.exists
+
+- name: Check if OpenVPN directory exists
+  file:
+    path: /etc/openvpn
+    state: directory
+    mode: '0755'
+
+- name: Copy necessary files to OpenVPN
+  copy:
+    src: "{{ item }}"
+    dest: "{{ openvpn_config_path }}/"
+    remote_src: yes
+  with_items:
+    - "{{ easy_rsa_pki_path }}/ca.crt"
+    - "{{ easy_rsa_pki_path }}/issued/server.crt"
+    - "{{ easy_rsa_pki_path }}/private/server.key"
+    - "{{ easy_rsa_pki_path }}/dh.pem"
+    - "{{ easy_rsa_pki_path }}/ta.key"
+
+- name: Apply OpenVPN server configuration
+  template:
+    src: "{{ openvpn_server_config_name }}"
+    dest: /etc/openvpn/server.conf
+
+- name: Start OpenVPN server
+  systemd:
+    name: openvpn@server
+    state: started
+    enabled: yes
+
+- name: Create client configuration
+  template:
+    src: "{{ openvpn_client_config_name }}"
+    dest: "client.ovpn"
